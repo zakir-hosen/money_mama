@@ -13,14 +13,14 @@ class ExpensePage extends StatefulWidget {
 
 class _ExpensePageState extends State<ExpensePage> {
   List<Map<String, dynamic>> _expenses = [];
-  List<Map<String, dynamic>> _incomes = []; // To hold income data
+  List<Map<String, dynamic>> _incomes = [];
   final ScrollController _scrollController = ScrollController();
   List<Map<String, dynamic>> _categories = [];
-  String _selectedCurrencySymbol = '৳'; // Changed for BDT
+  String _selectedCurrencySymbol = '৳';
   String _selectedCurrencyCode = 'BDT';
-  String? _selectedFilterCurrency; // Null for 'ALL'
+  String? _selectedFilterCurrency;
   double _totalExpense = 0.0;
-  double _totalIncome = 0.0; // Changed to be updatable
+  double _totalIncome = 0.0;
 
   @override
   void initState() {
@@ -31,8 +31,9 @@ class _ExpensePageState extends State<ExpensePage> {
   Future<void> _loadInitialData() async {
     await _loadCurrency();
     await _loadExpenses();
-    await _loadIncomes(); // Also load incomes
+    await _loadIncomes();
     await _loadCategories();
+    await _loadTotalsFromDatabase(); // ADDED: Load stored totals
   }
 
   Future<void> _loadCurrency() async {
@@ -47,15 +48,29 @@ class _ExpensePageState extends State<ExpensePage> {
     }
   }
 
+  // ADDED: Load totals from database
+  Future<void> _loadTotalsFromDatabase() async {
+    final totalExpense = await SembastHelper.instance
+        .getSettings('totalExpense', defaultValue: 0.0);
+    final totalIncome = await SembastHelper.instance
+        .getSettings('totalIncome', defaultValue: 0.0);
+
+    if (mounted) {
+      setState(() {
+        _totalExpense = (totalExpense as num).toDouble();
+        _totalIncome = (totalIncome as num).toDouble();
+      });
+    }
+  }
+
   Future<void> _loadExpenses() async {
     final records = await SembastHelper.instance.getExpenses();
     if (mounted) {
       setState(() {
         _expenses = records
             .map((e) => {'id': e.key, ...e.value})
-            .toList()
-            .reversed
             .toList();
+        // Don't reverse here since Sembast already sorts by date desc
         _calculateTotals();
       });
     }
@@ -67,8 +82,6 @@ class _ExpensePageState extends State<ExpensePage> {
       setState(() {
         _incomes = records
             .map((e) => {'id': e.key, ...e.value as Map<String, dynamic>})
-            .toList()
-            .reversed
             .toList();
         _calculateTotals();
       });
@@ -107,36 +120,33 @@ class _ExpensePageState extends State<ExpensePage> {
     }
   }
 
-// Add expense popup
+  // FIXED: Simplified expense dialog
   Future<void> _showExpenseDialog({Map<String, dynamic>? expense}) async {
-    // Always load initial data at the start to get the latest categories
-    await _loadInitialData();
+    await _loadCategories(); // Ensure we have latest categories
 
     String? selectedCategory = expense?['category'];
 
-    // This list will be used to build the DropdownButtonFormField items.
-    // We re-create it every time the dialog is shown.
-    List<Map<String, dynamic>> currentDialogCategories = List.from(_categories);
-    final doesCategoryExist =
-    _categories.any((category) => category['name'] == selectedCategory);
-    if (selectedCategory != null && !doesCategoryExist) {
-      currentDialogCategories.add({'name': selectedCategory});
+    // If editing and category doesn't exist, add it temporarily
+    if (expense != null && selectedCategory != null) {
+      final categoryExists = _categories.any((cat) => cat['name'] == selectedCategory);
+      if (!categoryExists) {
+        _categories.add({'name': selectedCategory, 'id': 'temp_${selectedCategory}'});
+      }
     }
+
+    // Set default category for new expenses
     if (expense == null && _categories.isNotEmpty) {
       selectedCategory = _categories.first['name'] as String?;
     }
 
-    final amountController =
-    TextEditingController(text: expense?['amount']?.toStringAsFixed(2) ?? '');
+    final amountController = TextEditingController(
+        text: expense?['amount']?.toStringAsFixed(2) ?? '');
     final noteController = TextEditingController(text: expense?['note'] ?? '');
-    DateTime selectedDate =
-    expense != null ? DateTime.parse(expense['date']) : DateTime.now();
+    DateTime selectedDate = expense != null
+        ? DateTime.parse(expense['date'])
+        : DateTime.now();
 
-    Currency dialogCurrency =
-        CurrencyService().findByCode(expense?['currency'] ?? _selectedCurrencyCode) ??
-            CurrencyService().findByCode('BDT')!;
-    List<Currency> availableCurrencies = CurrencyService().getAll();
-    String? selectedCurrencyCode = dialogCurrency.code;
+    String selectedCurrencyCode = expense?['currency'] ?? _selectedCurrencyCode;
 
     if (!mounted) return;
     await showDialog(
@@ -153,7 +163,6 @@ class _ExpensePageState extends State<ExpensePage> {
                   icon: const Icon(Icons.delete_forever, color: Colors.red),
                   tooltip: 'Delete Expense',
                   onPressed: () {
-                    if (!mounted) return;
                     Navigator.pop(dialogContext);
                     if (expense['id'] != null) {
                       _confirmDelete(expense['id'] as int);
@@ -166,31 +175,37 @@ class _ExpensePageState extends State<ExpensePage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // This is the key part: The items are always built from the fresh list.
+                // Category dropdown
                 DropdownButtonFormField<String>(
                   value: selectedCategory,
-                  items: currentDialogCategories
+                  items: _categories.isEmpty
+                      ? [const DropdownMenuItem<String>(
+                    value: null,
+                    child: Text("No categories available"),
+                  )]
+                      : _categories
                       .map((category) => DropdownMenuItem<String>(
                     value: category['name'] as String,
                     child: Text(category['name'] as String),
                   ))
                       .toList(),
-                  onChanged: (value) {
+                  onChanged: _categories.isEmpty
+                      ? null
+                      : (value) {
                     setDialogState(() => selectedCategory = value);
                   },
                   decoration: const InputDecoration(labelText: 'Category'),
-                  hint: currentDialogCategories.isEmpty
-                      ? const Text("No categories")
-                      : null,
                 ),
                 const SizedBox(height: 10),
+
+                // Amount and Currency row
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     Expanded(
                       child: TextField(
                         controller: amountController,
-                        keyboardType: TextInputType.number,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
                         decoration: const InputDecoration(
                           hintText: 'Amount',
                           border: UnderlineInputBorder(),
@@ -205,12 +220,11 @@ class _ExpensePageState extends State<ExpensePage> {
                         if (newValue != null) {
                           setDialogState(() {
                             selectedCurrencyCode = newValue;
-                            dialogCurrency =
-                            CurrencyService().findByCode(newValue)!;
                           });
                         }
                       },
-                      items: availableCurrencies
+                      items: CurrencyService()
+                          .getAll()
                           .map((currency) => DropdownMenuItem<String>(
                         value: currency.code,
                         child: Text(currency.symbol),
@@ -220,6 +234,8 @@ class _ExpensePageState extends State<ExpensePage> {
                   ],
                 ),
                 const SizedBox(height: 10),
+
+                // Note field
                 TextField(
                   controller: noteController,
                   decoration: const InputDecoration(
@@ -227,6 +243,8 @@ class _ExpensePageState extends State<ExpensePage> {
                   ),
                 ),
                 const SizedBox(height: 10),
+
+                // Date picker
                 Row(
                   children: [
                     const Text('Date: '),
@@ -234,7 +252,6 @@ class _ExpensePageState extends State<ExpensePage> {
                     IconButton(
                       icon: const Icon(Icons.calendar_today),
                       onPressed: () async {
-                        if (!mounted) return;
                         final date = await showDatePicker(
                           context: sfbContext,
                           initialDate: selectedDate,
@@ -260,7 +277,8 @@ class _ExpensePageState extends State<ExpensePage> {
               onPressed: () async {
                 final amount = double.tryParse(amountController.text);
                 final note = noteController.text.trim();
-                if (amount != null && selectedCategory != null) {
+
+                if (amount != null && amount > 0 && selectedCategory != null) {
                   final data = {
                     'category': selectedCategory,
                     'amount': double.parse(amount.toStringAsFixed(2)),
@@ -268,28 +286,38 @@ class _ExpensePageState extends State<ExpensePage> {
                     'date': selectedDate.toIso8601String(),
                     'currency': selectedCurrencyCode,
                   };
-                  if (expense == null) {
-                    await SembastHelper.instance.addExpense(data);
-                  } else {
-                    await SembastHelper.instance
-                        .updateExpense(expense['id'], data);
-                  }
-                  if (!mounted) return;
-                  Navigator.pop(dialogContext);
-                  await _loadExpenses();
-                  if (expense == null) {
-                    _scrollController.animateTo(
-                      0,
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeOut,
+
+                  try {
+                    if (expense == null) {
+                      await SembastHelper.instance.addExpense(data);
+                    } else {
+                      await SembastHelper.instance.updateExpense(expense['id'], data);
+                    }
+
+                    if (!mounted) return;
+                    Navigator.pop(dialogContext);
+                    await _loadExpenses();
+                    await _loadTotalsFromDatabase(); // ADDED: Reload totals from database
+
+                    if (expense == null) {
+                      _scrollController.animateTo(
+                        0,
+                        duration: const Duration(milliseconds: 300),
+                        curve: Curves.easeOut,
+                      );
+                    }
+                  } catch (e) {
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Error saving expense: $e')),
                     );
                   }
                 } else {
                   if (!mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                        content:
-                        Text('Please fill all required fields and select a category.')),
+                      content: Text('Please enter a valid amount and select a category.'),
+                    ),
                   );
                 }
               },
@@ -312,22 +340,11 @@ class _ExpensePageState extends State<ExpensePage> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Confirm Delete'),
-        content: const Text('Are you sure you want to delete the expanse?'),
+        content: const Text('Are you sure you want to delete this expense?'), // FIXED: typo
         actions: [
           TextButton(
             child: const Text(
-              'Yes',
-              style: TextStyle(
-                fontSize: 16.0,
-                fontWeight: FontWeight.w600,
-                color: Colors.red,
-              ),
-            ),
-            onPressed: () => Navigator.pop(dialogContext, true),
-          ),
-          TextButton(
-            child: const Text(
-              'No',
+              'Cancel',
               style: TextStyle(
                 fontSize: 16.0,
                 fontWeight: FontWeight.w600,
@@ -336,31 +353,50 @@ class _ExpensePageState extends State<ExpensePage> {
             ),
             onPressed: () => Navigator.pop(dialogContext, false),
           ),
+          TextButton(
+            child: const Text(
+              'Delete',
+              style: TextStyle(
+                fontSize: 16.0,
+                fontWeight: FontWeight.w600,
+                color: Colors.red,
+              ),
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+          ),
         ],
       ),
     );
+
     if (confirm == true) {
-      await SembastHelper.instance.deleteExpense(id);
-      _loadExpenses();
+      try {
+        await SembastHelper.instance.deleteExpense(id);
+        await _loadExpenses();
+        await _loadTotalsFromDatabase(); // ADDED: Reload totals after delete
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error deleting expense: $e')),
+        );
+      }
     }
   }
 
-  void _navigateToSettings() async {
+  Future<void> _navigateToSettings() async {
     await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => SettingsPage(
-          onCategoriesUpdated: () {
-            _loadCategories();
-            _loadExpenses();
+          onCategoriesUpdated: () async {
+            await _loadCategories();
+            await _loadExpenses();
           },
         ),
       ),
     );
+
     if (!mounted) return;
-    await _loadCategories();
-    await _loadCurrency();
-    await _loadExpenses(); // Re-load expenses to reflect any changes
+    await _loadInitialData(); // SIMPLIFIED: Reload all data
   }
 
   Widget _buildCurrencyFilter() {
@@ -372,8 +408,7 @@ class _ExpensePageState extends State<ExpensePage> {
 
     const maxDirectDisplay = 3;
     final displayCurrencies = uniqueCurrencies.take(maxDirectDisplay).toList();
-    final otherCurrencies =
-    uniqueCurrencies.skip(maxDirectDisplay).toList();
+    final otherCurrencies = uniqueCurrencies.skip(maxDirectDisplay).toList();
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 8.0),
@@ -384,27 +419,40 @@ class _ExpensePageState extends State<ExpensePage> {
             _buildFilterButton('All', null),
             ...displayCurrencies.map((currencyCode) {
               final currency = CurrencyService().findByCode(currencyCode);
-              return _buildFilterButton(currency?.code ?? currencyCode, currencyCode);
+              return _buildFilterButton(
+                  currency?.code ?? currencyCode, currencyCode);
             }),
             if (otherCurrencies.isNotEmpty)
-              DropdownButton<String>(
-                value: null,
-                underline: Container(), // Hides the default underline
-                hint: const Text('Others'),
-                items: otherCurrencies.map((currencyCode) {
-                  final currency = CurrencyService().findByCode(currencyCode);
-                  return DropdownMenuItem<String>(
-                    value: currencyCode,
-                    child: Text(currency?.code ?? currencyCode),
-                  );
-                }).toList(),
-                onChanged: (String? newValue) {
-                  if (newValue != null) {
-                    setState(() {
-                      _selectedFilterCurrency = newValue;
-                    });
-                  }
-                },
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4.0),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade200,
+                  borderRadius: BorderRadius.circular(10.0),
+                ),
+                child: DropdownButton<String>(
+                  value: otherCurrencies.contains(_selectedFilterCurrency)
+                      ? _selectedFilterCurrency
+                      : null, // FIXED: Handle selection state
+                  underline: Container(),
+                  hint: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8.0),
+                    child: Text('Others'),
+                  ),
+                  items: otherCurrencies.map((currencyCode) {
+                    final currency = CurrencyService().findByCode(currencyCode);
+                    return DropdownMenuItem<String>(
+                      value: currencyCode,
+                      child: Text(currency?.code ?? currencyCode),
+                    );
+                  }).toList(),
+                  onChanged: (String? newValue) {
+                    if (newValue != null) {
+                      setState(() {
+                        _selectedFilterCurrency = newValue;
+                      });
+                    }
+                  },
+                ),
               ),
           ],
         ),
@@ -424,7 +472,9 @@ class _ExpensePageState extends State<ExpensePage> {
         padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
         margin: const EdgeInsets.symmetric(horizontal: 4.0),
         decoration: BoxDecoration(
-          color: isSelected ? Theme.of(context).colorScheme.primary : Colors.grey.shade200,
+          color: isSelected
+              ? Theme.of(context).colorScheme.primary
+              : Colors.grey.shade200,
           borderRadius: BorderRadius.circular(10.0),
         ),
         child: Text(
@@ -454,10 +504,12 @@ class _ExpensePageState extends State<ExpensePage> {
       final dateString =
       DateFormat('yyyy-MM-dd').format(DateTime.parse(expense['date']));
       final currencyCode = expense['currency'] as String? ?? _selectedCurrencyCode;
+
       if (!groupedExpenses.containsKey(dateString)) {
         groupedExpenses[dateString] = [];
       }
       groupedExpenses[dateString]!.add(expense);
+
       if (!dailyTotalsByCurrency.containsKey(dateString)) {
         dailyTotalsByCurrency[dateString] = {};
       }
@@ -471,11 +523,14 @@ class _ExpensePageState extends State<ExpensePage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Money Mama',
+        title: const Text(
+          'Money Mama',
           style: TextStyle(
             color: Colors.black,
             fontSize: 24.0,
-            fontWeight: FontWeight.w800,),),
+            fontWeight: FontWeight.w800,
+          ),
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.settings),
@@ -485,6 +540,7 @@ class _ExpensePageState extends State<ExpensePage> {
       ),
       body: Column(
         children: [
+          // Balance container
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(20.0),
@@ -504,6 +560,16 @@ class _ExpensePageState extends State<ExpensePage> {
                     fontWeight: FontWeight.w600,
                   ),
                 ),
+                const SizedBox(height: 10),
+                // ADDED: Net balance display
+                Text(
+                  'Net: $_selectedCurrencySymbol${(_totalIncome - _totalExpense).toStringAsFixed(2)}',
+                  style: TextStyle(
+                    color: (_totalIncome - _totalExpense) >= 0 ? Colors.green : Colors.red,
+                    fontSize: 24.0,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
                 const SizedBox(height: 20),
                 Row(
                   children: [
@@ -512,14 +578,14 @@ class _ExpensePageState extends State<ExpensePage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text(
-                            'Expense:',
+                            'Income:',
                             style: TextStyle(color: Colors.white, fontSize: 16.0),
                           ),
                           Text(
-                            '$_selectedCurrencySymbol${_totalExpense.toStringAsFixed(2)}',
+                            '$_selectedCurrencySymbol${_totalIncome.toStringAsFixed(2)}',
                             style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 22.0,
+                              color: Colors.green,
+                              fontSize: 20.0,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
@@ -531,14 +597,14 @@ class _ExpensePageState extends State<ExpensePage> {
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
                           const Text(
-                            'Income:',
+                            'Expense:',
                             style: TextStyle(color: Colors.white, fontSize: 16.0),
                           ),
                           Text(
-                            '$_selectedCurrencySymbol${_totalIncome.toStringAsFixed(2)}',
+                            '$_selectedCurrencySymbol${_totalExpense.toStringAsFixed(2)}',
                             style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 22.0,
+                              color: Colors.red,
+                              fontSize: 20.0,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
@@ -550,12 +616,36 @@ class _ExpensePageState extends State<ExpensePage> {
               ],
             ),
           ),
+
+          // Currency filter
           if (_expenses.isNotEmpty) _buildCurrencyFilter(),
+
+          // Expenses list
           Expanded(
             child: filteredExpenses.isEmpty
                 ? Center(
-                child: Text(
-                    'No expenses found for ${_selectedFilterCurrency ?? "this filter"}'))
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.receipt_long,
+                    size: 64,
+                    color: Colors.grey.shade400,
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    _selectedFilterCurrency == null
+                        ? 'No expenses yet\nTap + to add your first expense'
+                        : 'No expenses found for $_selectedFilterCurrency',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ],
+              ),
+            )
                 : ListView.builder(
               controller: _scrollController,
               padding: const EdgeInsets.only(bottom: 80),
@@ -571,12 +661,14 @@ class _ExpensePageState extends State<ExpensePage> {
                   margin: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
                   elevation: 0.4,
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8.0)),
+                    borderRadius: BorderRadius.circular(8.0),
+                  ),
                   child: Padding(
                     padding: const EdgeInsets.all(15.0),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        // Date header with daily total
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
@@ -611,6 +703,8 @@ class _ExpensePageState extends State<ExpensePage> {
                         ),
                         const SizedBox(height: 10),
                         Divider(height: 1, color: Colors.blueGrey.shade100),
+
+                        // Individual expenses
                         ...expensesForDate.map((expense) {
                           final String originalCategory =
                               expense['category'] as String? ?? 'Unknown';
@@ -634,31 +728,39 @@ class _ExpensePageState extends State<ExpensePage> {
                             child: Padding(
                               padding: const EdgeInsets.symmetric(vertical: 8.0),
                               child: Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                mainAxisAlignment:
+                                MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        categoryToDisplay,
-                                        style: const TextStyle(
-                                          fontSize: 16.0,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                      if (note.isNotEmpty)
-                                        Padding(
-                                          padding: const EdgeInsets.only(top: 2.0),
-                                          child: Text(
-                                            note,
-                                            style: TextStyle(
-                                              fontSize: 14.0,
-                                              color: Colors.grey.shade600,
-                                            ),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          categoryToDisplay,
+                                          style: const TextStyle(
+                                            fontSize: 16.0,
+                                            fontWeight: FontWeight.w600,
                                           ),
                                         ),
-                                    ],
+                                        if (note.isNotEmpty)
+                                          Padding(
+                                            padding:
+                                            const EdgeInsets.only(top: 2.0),
+                                            child: Text(
+                                              note,
+                                              style: TextStyle(
+                                                fontSize: 14.0,
+                                                color: Colors.grey.shade600,
+                                              ),
+                                              overflow: TextOverflow.ellipsis,
+                                              maxLines: 2,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
                                   ),
+                                  const SizedBox(width: 8),
                                   Text(
                                     '$expenseCurrencySymbol${amount.toStringAsFixed(2)}',
                                     style: TextStyle(

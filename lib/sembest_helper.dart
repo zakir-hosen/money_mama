@@ -1,6 +1,6 @@
 import 'package:sembast/sembast.dart';
-import 'package:sembast_sqflite/sembast_sqflite.dart'; // Correct import
-import 'package:sqflite/sqflite.dart' as sqflite; // Import sqflite
+import 'package:sembast_sqflite/sembast_sqflite.dart';
+import 'package:sqflite/sqflite.dart' as sqflite;
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart';
 
@@ -16,31 +16,31 @@ class SembastHelper {
   final _settingsStore = stringMapStoreFactory.store('settings');
 
   // Database
-  final DatabaseFactory _dbFactory = getDatabaseFactorySqflite(sqflite.databaseFactory); // Use the correct factory
+  final DatabaseFactory _dbFactory = getDatabaseFactorySqflite(sqflite.databaseFactory);
   Database? _db;
 
-  // Initialize database
+  // Initialize database - FIXED: corrected syntax errors
   Future<Database> get database async {
     if (_db != null) return _db!;
 
+    // Using getApplicationDocumentsDirectory() ensures internal storage
     final dir = await getApplicationDocumentsDirectory();
     await dir.create(recursive: true);
     final dbPath = join(dir.path, 'my_expense.db');
-    _db = await _dbFactory.openDatabase(dbPath);
 
+    _db = await _dbFactory.openDatabase(dbPath); // FIXED: removed asterisks
     return _db!;
   }
 
   // ====================
   // Expense Methods
   // ====================
-
   Future<int> addExpense(Map<String, dynamic> data) async {
     final db = await database;
     if (!data.containsKey('date')) {
       data['date'] = DateTime.now().toIso8601String();
     }
-    // await _updateTotal('totalExpense', (data['amount'] as num).toDouble(), add: true);
+    await _updateTotal('totalExpense', (data['amount'] as num).toDouble(), add: true);
     return await _expenseStore.add(db, data);
   }
 
@@ -77,7 +77,6 @@ class SembastHelper {
   // ====================
   // Income Methods
   // ====================
-
   Future<int> addIncome(Map<String, dynamic> data) async {
     final db = await database;
     if (!data.containsKey('date')) {
@@ -140,9 +139,9 @@ class SembastHelper {
     return records.map((r) => {'id': r.key, ...r.value}).toList();
   }
 
-  Future<int> updateCategory(int key, Map<String, dynamic> dataToUpdate) async {
+  Future<String> updateCategory(String key, Map<String, dynamic> dataToUpdate) async { // FIXED: changed return type and parameter type
     final db = await database;
-    await _categoryStore.record(key as String).update(db, dataToUpdate);
+    await _categoryStore.record(key).update(db, dataToUpdate);
     return key;
   }
 
@@ -158,16 +157,15 @@ class SembastHelper {
     });
   }
 
-  Future<int> deleteCategory(int key) async {
+  Future<String> deleteCategory(String key) async { // FIXED: changed return type and parameter type
     final db = await database;
-    await _categoryStore.record(key as String).delete(db);
+    await _categoryStore.record(key).delete(db);
     return key;
   }
 
   // ====================
   // Settings Methods
   // ====================
-
   Future<void> saveSettings(String key, dynamic value) async {
     final db = await database;
     await _settingsStore.record(key).put(db, {'value': value});
@@ -182,7 +180,6 @@ class SembastHelper {
   // ====================
   // Total Balances
   // ====================
-
   Future<void> _updateTotal(String key, double amount, {bool add = true}) async {
     final db = await database;
     final currentTotal = await getSettings(key, defaultValue: 0.0);
@@ -193,5 +190,32 @@ class SembastHelper {
       newTotal = amount;
     }
     await saveSettings(key, newTotal);
+  }
+
+  // ====================
+  // Additional Helper Methods
+  // ====================
+
+  // Get database file path for debugging
+  Future<String> getDatabasePath() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return join(dir.path, 'my_expense.db');
+  }
+
+  // Close database connection
+  Future<void> closeDatabase() async {
+    if (_db != null) {
+      await _db!.close();
+      _db = null;
+    }
+  }
+
+  // Clear all data (useful for testing or reset functionality)
+  Future<void> clearAllData() async {
+    final db = await database;
+    await _expenseStore.delete(db);
+    await _incomeStore.delete(db);
+    await _categoryStore.delete(db);
+    await _settingsStore.delete(db);
   }
 }

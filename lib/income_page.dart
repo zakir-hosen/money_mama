@@ -12,9 +12,9 @@ class IncomePage extends StatefulWidget {
 
 class _IncomePageState extends State<IncomePage> {
   List<Map<String, dynamic>> _incomes = [];
-  List<Map<String, dynamic>> _expenses = []; // To hold expense data
+  List<Map<String, dynamic>> _expenses = [];
   final ScrollController _scrollController = ScrollController();
-  String _selectedCurrencySymbol = '৳'; // Changed for BDT
+  String _selectedCurrencySymbol = '৳';
   String _selectedCurrencyCode = 'BDT';
   String? _selectedFilterCurrency;
   double _totalExpense = 0.0;
@@ -29,8 +29,27 @@ class _IncomePageState extends State<IncomePage> {
   Future<void> _loadInitialData() async {
     await _loadCurrency();
     await _loadIncomes();
-    await _loadExpenses(); // Also load expenses
+    await _loadExpenses();
+    await _loadTotalsFromDatabase(); // ADDED: Load stored totals
+  }
 
+  // ADDED: Load totals from database
+  Future<void> _loadTotalsFromDatabase() async {
+    try {
+      final totalExpense = await SembastHelper.instance
+          .getSettings('totalExpense', defaultValue: 0.0);
+      final totalIncome = await SembastHelper.instance
+          .getSettings('totalIncome', defaultValue: 0.0);
+
+      if (mounted) {
+        setState(() {
+          _totalExpense = (totalExpense as num).toDouble();
+          _totalIncome = (totalIncome as num).toDouble();
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading totals: $e');
+    }
   }
 
   void _calculateTotals() {
@@ -57,58 +76,71 @@ class _IncomePageState extends State<IncomePage> {
   }
 
   Future<void> _loadCurrency() async {
-    final currencyCode = await SembastHelper.instance
-        .getSettings('currencyCode', defaultValue: 'BDT');
-    final currency = CurrencyService().findByCode(currencyCode);
-    if (mounted && currency != null) {
-      setState(() {
-        _selectedCurrencyCode = currency.code;
-        _selectedCurrencySymbol = currency.symbol;
-      });
+    try {
+      final currencyCode = await SembastHelper.instance
+          .getSettings('currencyCode', defaultValue: 'BDT');
+      final currency = CurrencyService().findByCode(currencyCode);
+      if (mounted && currency != null) {
+        setState(() {
+          _selectedCurrencyCode = currency.code;
+          _selectedCurrencySymbol = currency.symbol;
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading currency: $e');
     }
   }
 
   Future<void> _loadIncomes() async {
-    final records = await SembastHelper.instance.getIncomes();
-    if (mounted) {
-      setState(() {
-        _incomes = records
-            .map((e) => {'id': e.key, ...e.value as Map<String, dynamic>})
-            .toList()
-            .reversed
-            .toList();
-        _calculateTotals();
-      });
+    try {
+      final records = await SembastHelper.instance.getIncomes();
+      if (mounted) {
+        setState(() {
+          _incomes = records
+              .map((e) => {'id': e.key, ...e.value as Map<String, dynamic>})
+              .toList();
+          // Don't reverse since Sembast already sorts by date desc
+          _calculateTotals();
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading incomes: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error loading incomes: $e')),
+        );
+      }
     }
   }
 
   Future<void> _loadExpenses() async {
-    final records = await SembastHelper.instance.getExpenses();
-    if (mounted) {
-      setState(() {
-        _expenses = records
-            .map((e) => {'id': e.key, ...e.value as Map<String, dynamic>})
-            .toList()
-            .reversed
-            .toList();
-        _calculateTotals();
-      });
+    try {
+      final records = await SembastHelper.instance.getExpenses();
+      if (mounted) {
+        setState(() {
+          _expenses = records
+              .map((e) => {'id': e.key, ...e.value as Map<String, dynamic>})
+              .toList();
+          _calculateTotals();
+        });
+      }
+    } catch (e) {
+      debugPrint('Error loading expenses: $e');
     }
   }
 
-
+  // FIXED: Improved income dialog with better validation
   Future<void> _showIncomeDialog({Map<String, dynamic>? income}) async {
-    final amountController =
-    TextEditingController(text: income?['amount']?.toStringAsFixed(2) ?? '');
+    final amountController = TextEditingController(
+        text: income?['amount']?.toStringAsFixed(2) ?? '');
     final noteController = TextEditingController(text: income?['note'] ?? '');
-    DateTime selectedDate =
-    income != null ? DateTime.parse(income['date']) : DateTime.now();
+    final sourceController = TextEditingController(text: income?['source'] ?? ''); // ADDED: Income source
 
-    Currency dialogCurrency =
-        CurrencyService().findByCode(income?['currency'] ?? _selectedCurrencyCode) ??
-            CurrencyService().findByCode('BDT')!;
-    List<Currency> availableCurrencies = CurrencyService().getAll();
-    String? selectedCurrencyCode = dialogCurrency.code;
+    DateTime selectedDate = income != null
+        ? DateTime.parse(income['date'])
+        : DateTime.now();
+
+    String selectedCurrencyCode = income?['currency'] ?? _selectedCurrencyCode;
 
     if (!mounted) return;
     await showDialog(
@@ -125,7 +157,6 @@ class _IncomePageState extends State<IncomePage> {
                   icon: const Icon(Icons.delete_forever, color: Colors.red),
                   tooltip: 'Delete Income',
                   onPressed: () {
-                    if (!mounted) return;
                     Navigator.pop(dialogContext);
                     if (income['id'] != null) {
                       _confirmDelete(income['id'] as int);
@@ -138,13 +169,25 @@ class _IncomePageState extends State<IncomePage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // ADDED: Income source field
+                TextField(
+                  controller: sourceController,
+                  decoration: const InputDecoration(
+                    labelText: 'Income Source',
+                    hintText: 'e.g., Salary, Freelance, Investment',
+                  ),
+                  textCapitalization: TextCapitalization.words,
+                ),
+                const SizedBox(height: 10),
+
+                // Amount and Currency row
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     Expanded(
                       child: TextField(
                         controller: amountController,
-                        keyboardType: TextInputType.number,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
                         decoration: const InputDecoration(
                           hintText: 'Amount',
                           border: UnderlineInputBorder(),
@@ -159,12 +202,11 @@ class _IncomePageState extends State<IncomePage> {
                         if (newValue != null) {
                           setDialogState(() {
                             selectedCurrencyCode = newValue;
-                            dialogCurrency =
-                            CurrencyService().findByCode(newValue)!;
                           });
                         }
                       },
-                      items: availableCurrencies
+                      items: CurrencyService()
+                          .getAll()
                           .map((currency) => DropdownMenuItem<String>(
                         value: currency.code,
                         child: Text(currency.symbol),
@@ -174,13 +216,19 @@ class _IncomePageState extends State<IncomePage> {
                   ],
                 ),
                 const SizedBox(height: 10),
+
+                // Note field
                 TextField(
                   controller: noteController,
                   decoration: const InputDecoration(
-                    labelText: 'Note',
+                    labelText: 'Note (Optional)',
+                    hintText: 'Additional details',
                   ),
+                  maxLines: 2,
                 ),
                 const SizedBox(height: 10),
+
+                // Date picker
                 Row(
                   children: [
                     const Text('Date: '),
@@ -188,7 +236,6 @@ class _IncomePageState extends State<IncomePage> {
                     IconButton(
                       icon: const Icon(Icons.calendar_today),
                       onPressed: () async {
-                        if (!mounted) return;
                         final date = await showDatePicker(
                           context: sfbContext,
                           initialDate: selectedDate,
@@ -214,36 +261,48 @@ class _IncomePageState extends State<IncomePage> {
               onPressed: () async {
                 final amount = double.tryParse(amountController.text);
                 final note = noteController.text.trim();
-                if (amount != null) {
+                final source = sourceController.text.trim();
+
+                if (amount != null && amount > 0) {
                   final data = {
                     'amount': double.parse(amount.toStringAsFixed(2)),
                     'note': note,
+                    'source': source.isNotEmpty ? source : 'Income', // ADDED: Default source
                     'date': selectedDate.toIso8601String(),
                     'currency': selectedCurrencyCode,
                   };
-                  if (income == null) {
-                    await SembastHelper.instance.addIncome(data);
-                  } else {
-                    await SembastHelper.instance
-                        .updateIncome(income['id'], data);
-                  }
-                  if (!mounted) return;
-                  Navigator.pop(dialogContext);
-                  await _loadIncomes(); // This will trigger a total recalculation
 
-                  if (income == null) {
-                    _scrollController.animateTo(
-                      0,
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeOut,
+                  try {
+                    if (income == null) {
+                      await SembastHelper.instance.addIncome(data);
+                    } else {
+                      await SembastHelper.instance.updateIncome(income['id'], data);
+                    }
+
+                    if (!mounted) return;
+                    Navigator.pop(dialogContext);
+                    await _loadIncomes();
+                    await _loadTotalsFromDatabase(); // ADDED: Reload totals from database
+
+                    if (income == null) {
+                      _scrollController.animateTo(
+                        0,
+                        duration: const Duration(milliseconds: 300),
+                        curve: Curves.easeOut,
+                      );
+                    }
+                  } catch (e) {
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Error saving income: $e')),
                     );
                   }
                 } else {
                   if (!mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                        content:
-                        Text('Please fill all required fields.')),
+                      content: Text('Please enter a valid amount greater than 0.'),
+                    ),
                   );
                 }
               },
@@ -266,22 +325,11 @@ class _IncomePageState extends State<IncomePage> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Confirm Delete'),
-        content: const Text('Are you sure you want to delete the income?'),
+        content: const Text('Are you sure you want to delete this income entry?'),
         actions: [
           TextButton(
             child: const Text(
-              'Yes',
-              style: TextStyle(
-                fontSize: 16.0,
-                fontWeight: FontWeight.w600,
-                color: Colors.red,
-              ),
-            ),
-            onPressed: () => Navigator.pop(dialogContext, true),
-          ),
-          TextButton(
-            child: const Text(
-              'No',
+              'Cancel',
               style: TextStyle(
                 fontSize: 16.0,
                 fontWeight: FontWeight.w600,
@@ -290,13 +338,40 @@ class _IncomePageState extends State<IncomePage> {
             ),
             onPressed: () => Navigator.pop(dialogContext, false),
           ),
+          TextButton(
+            child: const Text(
+              'Delete',
+              style: TextStyle(
+                fontSize: 16.0,
+                fontWeight: FontWeight.w600,
+                color: Colors.red,
+              ),
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+          ),
         ],
       ),
     );
-    if (confirm == true) {
-      await SembastHelper.instance.deleteIncome(id);
-      _loadIncomes(); // This will trigger a total recalculation
 
+    if (confirm == true) {
+      try {
+        await SembastHelper.instance.deleteIncome(id);
+        await _loadIncomes();
+        await _loadTotalsFromDatabase(); // ADDED: Reload totals after delete
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Income deleted successfully')),
+          );
+        }
+      } catch (e) {
+        debugPrint('Error deleting income: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error deleting income: $e')),
+          );
+        }
+      }
     }
   }
 
@@ -309,8 +384,7 @@ class _IncomePageState extends State<IncomePage> {
 
     const maxDirectDisplay = 3;
     final displayCurrencies = uniqueCurrencies.take(maxDirectDisplay).toList();
-    final otherCurrencies =
-    uniqueCurrencies.skip(maxDirectDisplay).toList();
+    final otherCurrencies = uniqueCurrencies.skip(maxDirectDisplay).toList();
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 8.0),
@@ -321,27 +395,40 @@ class _IncomePageState extends State<IncomePage> {
             _buildFilterButton('All', null),
             ...displayCurrencies.map((currencyCode) {
               final currency = CurrencyService().findByCode(currencyCode);
-              return _buildFilterButton(currency?.code ?? currencyCode, currencyCode);
+              return _buildFilterButton(
+                  currency?.code ?? currencyCode, currencyCode);
             }),
             if (otherCurrencies.isNotEmpty)
-              DropdownButton<String>(
-                value: null,
-                underline: Container(), // Hides the default underline
-                hint: const Text('Others'),
-                items: otherCurrencies.map((currencyCode) {
-                  final currency = CurrencyService().findByCode(currencyCode);
-                  return DropdownMenuItem<String>(
-                    value: currencyCode,
-                    child: Text(currency?.code ?? currencyCode),
-                  );
-                }).toList(),
-                onChanged: (String? newValue) {
-                  if (newValue != null) {
-                    setState(() {
-                      _selectedFilterCurrency = newValue;
-                    });
-                  }
-                },
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4.0),
+                decoration: BoxDecoration(
+                  color: Colors.grey.shade200,
+                  borderRadius: BorderRadius.circular(10.0),
+                ),
+                child: DropdownButton<String>(
+                  value: otherCurrencies.contains(_selectedFilterCurrency)
+                      ? _selectedFilterCurrency
+                      : null, // FIXED: Handle selection state
+                  underline: Container(),
+                  hint: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8.0),
+                    child: Text('Others'),
+                  ),
+                  items: otherCurrencies.map((currencyCode) {
+                    final currency = CurrencyService().findByCode(currencyCode);
+                    return DropdownMenuItem<String>(
+                      value: currencyCode,
+                      child: Text(currency?.code ?? currencyCode),
+                    );
+                  }).toList(),
+                  onChanged: (String? newValue) {
+                    if (newValue != null) {
+                      setState(() {
+                        _selectedFilterCurrency = newValue;
+                      });
+                    }
+                  },
+                ),
               ),
           ],
         ),
@@ -361,7 +448,9 @@ class _IncomePageState extends State<IncomePage> {
         padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
         margin: const EdgeInsets.symmetric(horizontal: 4.0),
         decoration: BoxDecoration(
-          color: isSelected ? Theme.of(context).colorScheme.primary : Colors.grey.shade200,
+          color: isSelected
+              ? Theme.of(context).colorScheme.primary
+              : Colors.grey.shade200,
           borderRadius: BorderRadius.circular(10.0),
         ),
         child: Text(
@@ -390,10 +479,12 @@ class _IncomePageState extends State<IncomePage> {
       final dateString =
       DateFormat('yyyy-MM-dd').format(DateTime.parse(income['date']));
       final currencyCode = income['currency'] as String? ?? _selectedCurrencyCode;
+
       if (!groupedIncomes.containsKey(dateString)) {
         groupedIncomes[dateString] = [];
       }
       groupedIncomes[dateString]!.add(income);
+
       if (!dailyTotalsByCurrency.containsKey(dateString)) {
         dailyTotalsByCurrency[dateString] = {};
       }
@@ -407,22 +498,38 @@ class _IncomePageState extends State<IncomePage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Money Mama',
+        title: const Text(
+          'Money Mama',
           style: TextStyle(
             color: Colors.black,
             fontSize: 24.0,
-            fontWeight: FontWeight.w800,),),
-
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        backgroundColor: Colors.green.shade50, // ADDED: Income theme color
       ),
       body: Column(
         children: [
+          // Enhanced balance container
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(20.0),
             margin: const EdgeInsets.all(16.0),
             decoration: BoxDecoration(
-              color: Colors.green.shade800,
-              borderRadius: BorderRadius.circular(20.0),
+              gradient: LinearGradient( // IMPROVED: Added gradient
+                colors: [Colors.green.shade700, Colors.green.shade800],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(16.0), // IMPROVED: Increased radius
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.green.withOpacity(0.3),
+                  spreadRadius: 1,
+                  blurRadius: 8,
+                  offset: const Offset(0, 4),
+                ),
+              ],
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -435,6 +542,18 @@ class _IncomePageState extends State<IncomePage> {
                     fontWeight: FontWeight.w600,
                   ),
                 ),
+                const SizedBox(height: 10),
+                // ADDED: Net balance display
+                Text(
+                  'Net: $_selectedCurrencySymbol${(_totalIncome - _totalExpense).toStringAsFixed(2)}',
+                  style: TextStyle(
+                    color: (_totalIncome - _totalExpense) >= 0
+                        ? Colors.white
+                        : Colors.red.shade200,
+                    fontSize: 24.0,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
                 const SizedBox(height: 20),
                 Row(
                   children: [
@@ -443,14 +562,14 @@ class _IncomePageState extends State<IncomePage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text(
-                            'Expense:',
+                            'Income:',
                             style: TextStyle(color: Colors.white, fontSize: 16.0),
                           ),
                           Text(
-                            '$_selectedCurrencySymbol${_totalExpense.toStringAsFixed(2)}', // Corrected to 2 decimal places
+                            '$_selectedCurrencySymbol${_totalIncome.toStringAsFixed(2)}',
                             style: const TextStyle(
                               color: Colors.white,
-                              fontSize: 22.0,
+                              fontSize: 20.0,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
@@ -462,14 +581,14 @@ class _IncomePageState extends State<IncomePage> {
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
                           const Text(
-                            'Income:',
+                            'Expense:',
                             style: TextStyle(color: Colors.white, fontSize: 16.0),
                           ),
                           Text(
-                            '$_selectedCurrencySymbol${_totalIncome.toStringAsFixed(2)}', // Corrected to 2 decimal places
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 22.0,
+                            '$_selectedCurrencySymbol${_totalExpense.toStringAsFixed(2)}',
+                            style: TextStyle(
+                              color: Colors.red.shade200,
+                              fontSize: 20.0,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
@@ -481,12 +600,36 @@ class _IncomePageState extends State<IncomePage> {
               ],
             ),
           ),
+
+          // Currency filter
           if (_incomes.isNotEmpty) _buildCurrencyFilter(),
+
+          // Incomes list
           Expanded(
             child: filteredIncomes.isEmpty
                 ? Center(
-                child: Text(
-                    'No incomes found for ${_selectedFilterCurrency ?? "this filter"}'))
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.attach_money,
+                    size: 64,
+                    color: Colors.grey.shade400,
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    _selectedFilterCurrency == null
+                        ? 'No income entries yet\nTap + to add your first income'
+                        : 'No income found for $_selectedFilterCurrency',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ],
+              ),
+            )
                 : ListView.builder(
               controller: _scrollController,
               padding: const EdgeInsets.only(bottom: 80),
@@ -502,12 +645,14 @@ class _IncomePageState extends State<IncomePage> {
                   margin: const EdgeInsets.symmetric(horizontal: 15, vertical: 8),
                   elevation: 0.4,
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8.0)),
+                    borderRadius: BorderRadius.circular(8.0),
+                  ),
                   child: Padding(
                     padding: const EdgeInsets.all(15.0),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        // Date header with daily total
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
@@ -527,14 +672,14 @@ class _IncomePageState extends State<IncomePage> {
                                       .findByCode(entry.key)
                                       ?.symbol ??
                                       '\$';
-                                  return '$currencySymbol${entry.value.toStringAsFixed(2)}'; // Corrected to 2 decimal places
+                                  return '+$currencySymbol${entry.value.toStringAsFixed(2)}'; // ADDED: + prefix
                                 }).join(', '),
                                 overflow: TextOverflow.ellipsis,
                                 textAlign: TextAlign.right,
                                 style: TextStyle(
                                   fontSize: 16.0,
                                   fontWeight: FontWeight.w600,
-                                  color: Theme.of(context).colorScheme.error,
+                                  color: Colors.green.shade700, // FIXED: Changed to green for income
                                 ),
                               ),
                             ),
@@ -542,10 +687,12 @@ class _IncomePageState extends State<IncomePage> {
                         ),
                         const SizedBox(height: 10),
                         Divider(height: 1, color: Colors.blueGrey.shade100),
+
+                        // Individual income entries
                         ...incomesForDate.map((income) {
-                          final double amount =
-                          (income['amount'] as num).toDouble();
+                          final double amount = (income['amount'] as num).toDouble();
                           final String note = income['note'] as String? ?? '';
+                          final String source = income['source'] as String? ?? 'Income'; // ADDED: Source field
                           final String incomeCurrencyCode =
                               income['currency'] ?? _selectedCurrencyCode;
                           final Currency? incomeCurrency =
@@ -560,29 +707,34 @@ class _IncomePageState extends State<IncomePage> {
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      const Text(
-                                        'Income',
-                                        style: TextStyle(
-                                          fontSize: 16.0,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                      if (note.isNotEmpty)
-                                        Padding(
-                                          padding: const EdgeInsets.only(top: 2.0),
-                                          child: Text(
-                                            note,
-                                            style: TextStyle(
-                                              fontSize: 14.0,
-                                              color: Colors.grey.shade600,
-                                            ),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          source, // IMPROVED: Show source instead of generic "Income"
+                                          style: const TextStyle(
+                                            fontSize: 16.0,
+                                            fontWeight: FontWeight.w600,
                                           ),
                                         ),
-                                    ],
+                                        if (note.isNotEmpty)
+                                          Padding(
+                                            padding: const EdgeInsets.only(top: 2.0),
+                                            child: Text(
+                                              note,
+                                              style: TextStyle(
+                                                fontSize: 14.0,
+                                                color: Colors.grey.shade600,
+                                              ),
+                                              overflow: TextOverflow.ellipsis,
+                                              maxLines: 2,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
                                   ),
+                                  const SizedBox(width: 8),
                                   Text(
                                     '+$incomeCurrencySymbol${amount.toStringAsFixed(2)}',
                                     style: TextStyle(
@@ -608,7 +760,7 @@ class _IncomePageState extends State<IncomePage> {
       floatingActionButton: FloatingActionButton(
         onPressed: () => _showIncomeDialog(),
         backgroundColor: Colors.green,
-        child: const Icon(Icons.add),
+        child: const Icon(Icons.add, color: Colors.white),
       ),
     );
   }
